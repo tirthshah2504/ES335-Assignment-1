@@ -20,7 +20,7 @@ offset = 100
 folders = ["LAYING","SITTING","STANDING","WALKING","WALKING_DOWNSTAIRS","WALKING_UPSTAIRS"]
 classes = {"WALKING":1,"WALKING_UPSTAIRS":2,"WALKING_DOWNSTAIRS":3,"SITTING":4,"STANDING":5,"LAYING":6}
 
-combined_dir = os.path.join("Combined")
+combined_dir = os.path.join("/Users/tirth/Downloads/Sem 5/ML/ES335-Assignment-1/HAR/Combined")
 
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-==-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
                                                 # Train Dataset
