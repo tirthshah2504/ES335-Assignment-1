@@ -1,187 +1,150 @@
 """
-The current code given is for the Assignment 1.
-You will be expected to use this to make trees for:
-> discrete input, discrete output
-> real input, real output
-> real input, discrete output
-> discrete input, real output
+Simplified Decision Tree (same class shape as the reference code)
+
+Supports:
+- discrete input, discrete output
+- real input, real output
+- real input, discrete output
+- discrete input, real output
 """
 from dataclasses import dataclass
-from typing import Literal, Optional, Dict, Any, Union
+from typing import Literal, Union
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from tree.utils import *
+from tree.utils import *  # expects: check_ifreal, opt_split_attribute, opt_threshold, split_data, information_gain
 
 np.random.seed(42)
 
 
 @dataclass
-class TreeNode:
-    is_leaf: bool
-    value: Optional[Any] = None
-    feature: Optional[Union[str, int]] = None
-    threshold: Optional[float] = None
-    children: Optional[Dict[Any, "TreeNode"]] = None
-    left: Optional["TreeNode"] = None
-    right: Optional["TreeNode"] = None
+class Node:
+    
+    def __init__(self, attribute=None, value=None, left=None, right=None, is_leaf=False, output=None, gain=0.0):
+        self.attribute = attribute
+        self.value = value
+        self.left = left
+        self.right = right
+        self.is_leaf = is_leaf
+        self.output = output
+        self.gain = gain
+
+    def check_leaf(self):
+        return self.is_leaf
 
 
-@dataclass
 class DecisionTree:
-    criterion: Literal["information_gain", "gini_index"]
+    criterion: Literal["entropy", "gini_index"]  # criterion won't be used for regression
     max_depth: int
 
-    def __init__(self, criterion, max_depth=5):
+    def __init__(self, criterion: str, max_depth: int = 10):
         self.criterion = criterion
         self.max_depth = max_depth
-        self._default_leaf = None
-        self.tree: Optional[TreeNode] = None
+        self.root_node: Union[Node, None] = None
 
-    def _build_tree_dis_in_dis_out(self, X: pd.DataFrame, y: pd.Series, depth: int):
-        if depth == self.max_depth or y.nunique() == 1 or X.shape[1] == 0:
-            return TreeNode(is_leaf=True, value=y.mode()[0])
-        best_attribute = opt_split_attribute(X, y, self.criterion)
-        if best_attribute is None or best_attribute not in X.columns:
-            return TreeNode(is_leaf=True, value=y.mode()[0])
-        children = {}
-        for value in X[best_attribute].unique():
-            mask = (X[best_attribute] == value)
-            subset_X = X.loc[mask].drop(columns=[best_attribute])
-            subset_y = y.loc[mask]
-            child = (
-                self._build_tree_dis_in_dis_out(subset_X, subset_y, depth + 1)
-                if len(subset_y) else TreeNode(is_leaf=True, value=y.mode()[0])
-            )
-            children[value] = child
-        return TreeNode(is_leaf=False, feature=best_attribute, children=children)
+    def fit(self, X: pd.DataFrame, y: pd.Series, depth: int = 0) -> None:
+        """
+        Train and construct the decision tree.
+        Handles real/discrete input and real/discrete output automatically.
+        """
 
-    def _build_tree_real_in_dis_out(self, X: pd.DataFrame, y: pd.Series, depth: int):
-        if depth == self.max_depth or y.nunique() == 1 or X.shape[1] == 0:
-            return TreeNode(is_leaf=True, value=y.mode()[0])
-        res = opt_split_attribute(X, y, self.criterion)
-        if res is None:
-            return TreeNode(is_leaf=True, value=y.mode()[0])
-        best_attribute, best_threshold = res
-        left_mask = X[best_attribute] <= best_threshold
-        right_mask = ~left_mask
-        left_X, left_y = X.loc[left_mask], y.loc[left_mask]
-        right_X, right_y = X.loc[right_mask], y.loc[right_mask]
-        left_child = (
-            self._build_tree_real_in_dis_out(left_X, left_y, depth + 1)
-            if len(left_y) else TreeNode(is_leaf=True, value=y.mode()[0])
-        )
-        right_child = (
-            self._build_tree_real_in_dis_out(right_X, right_y, depth + 1)
-            if len(right_y) else TreeNode(is_leaf=True, value=y.mode()[0])
-        )
-        return TreeNode(is_leaf=False, feature=best_attribute, threshold=float(best_threshold),
-                        left=left_child, right=right_child)
+        def make_leaf(y_: pd.Series) -> Node:
+            if check_ifreal(y_):
+                return Node(is_leaf=True, output=float(np.round(y_.mean(), 4)))
+            else:
+                return Node(is_leaf=True, output=y_.mode()[0])
 
-    def _build_tree_dis_in_real_out(self, X: pd.DataFrame, y: pd.Series, depth: int):
-        if depth == self.max_depth or y.nunique() == 1 or X.shape[1] == 0:
-            return TreeNode(is_leaf=True, value=float(y.mean()))
-        best_attribute = opt_split_attribute(X, y, self.criterion)
-        if best_attribute is None or best_attribute not in X.columns:
-            return TreeNode(is_leaf=True, value=float(y.mean()))
-        children = {}
-        for value in X[best_attribute].unique():
-            mask = (X[best_attribute] == value)
-            subset_X = X.loc[mask].drop(columns=[best_attribute])
-            subset_y = y.loc[mask]
-            child = (
-                self._build_tree_dis_in_real_out(subset_X, subset_y, depth + 1)
-                if len(subset_y) else TreeNode(is_leaf=True, value=float(y.mean()))
-            )
-            children[value] = child
-        return TreeNode(is_leaf=False, feature=best_attribute, children=children)
+        def build(X_: pd.DataFrame, y_: pd.Series, d: int) -> Node:
+            # stopping conditions
+            if d >= self.max_depth or y_.nunique() <= 1 or X_.shape[1] == 0:
+                return make_leaf(y_)
 
-    def _build_tree_real_in_real_out(self, X: pd.DataFrame, y: pd.Series, depth: int):
-        if depth == self.max_depth or y.nunique() == 1 or X.shape[1] == 0:
-            return TreeNode(is_leaf=True, value=float(y.mean()))
-        res = opt_split_attribute(X, y, self.criterion)
-        if res is None:
-            return TreeNode(is_leaf=True, value=float(y.mean()))
-        best_attribute, best_threshold = res
-        left_mask = X[best_attribute] <= best_threshold
-        right_mask = ~left_mask
-        left_X, left_y = X.loc[left_mask], y.loc[left_mask]
-        right_X, right_y = X.loc[right_mask], y.loc[right_mask]
-        left_child = (
-            self._build_tree_real_in_real_out(left_X, left_y, depth + 1)
-            if len(left_y) else TreeNode(is_leaf=True, value=float(y.mean()))
-        )
-        right_child = (
-            self._build_tree_real_in_real_out(right_X, right_y, depth + 1)
-            if len(right_y) else TreeNode(is_leaf=True, value=float(y.mean()))
-        )
-        return TreeNode(is_leaf=False, feature=best_attribute, threshold=float(best_threshold),
-                        left=left_child, right=right_child)
+            # choose best attribute
+            best_attr = opt_split_attribute(X_, y_, X_.columns, self.criterion)
+            if best_attr is None or best_attr not in X_.columns:
+                return make_leaf(y_)
 
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        self._default_leaf = float(y.mean()) if check_ifreal(y) else y.mode()[0]
-        if (check_ifreal(X.iloc[:, 0]) == False and check_ifreal(y) == False):
-            self.tree = self._build_tree_dis_in_dis_out(X, y, 0)
-        elif (check_ifreal(X.iloc[:, 0]) == True and check_ifreal(y) == False):
-            self.tree = self._build_tree_real_in_dis_out(X, y, 0)
-        elif (check_ifreal(X.iloc[:, 0]) == False and check_ifreal(y) == True):
-            self.tree = self._build_tree_dis_in_real_out(X, y, 0)
-        else:
-            self.tree = self._build_tree_real_in_real_out(X, y, 0)
+            # choose split "value"
+            if check_ifreal(X_[best_attr]):
+                split_val = opt_threshold(y_, X_[best_attr], self.criterion)
+            else:
+                # for discrete attr, split on most informative category (or majority as a fallback)
+                split_val = X_[best_attr].mode()[0]
+
+            # perform split
+            X_left, y_left, X_right, y_right = split_data(X_, y_, best_attr, split_val)
+
+            # if split failed, back off to leaf
+            if len(y_left) == 0 or len(y_right) == 0:
+                return make_leaf(y_)
+
+            # compute split gain (optional metadata)
+            try:
+                best_gain = float(information_gain(y_, X_[best_attr], self.criterion))
+            except Exception:
+                best_gain = 0.0
+
+            # recurse
+            left = build(X_left, y_left, d + 1)
+            right = build(X_right, y_right, d + 1)
+
+            return Node(attribute=best_attr, value=split_val, left=left, right=right, is_leaf=False, gain=best_gain)
+
+        self.root_node = build(X, y, depth)
 
     def predict(self, X: pd.DataFrame) -> pd.Series:
-        def _coerce(name, index):
-            if name in index:
-                return name
-            try:
-                k = int(name)
-                if k in index: return k
-            except:
-                pass
-            try:
-                k = float(name)
-                if k in index: return k
-            except:
-                pass
-            return name
+        """
+        Predict outputs for rows in X by traversing the trained tree.
+        """
 
-        preds = []
-        for _, row in X.iterrows():
-            node = self.tree
-            fallback = self._default_leaf
-            while isinstance(node, TreeNode) and not node.is_leaf:
-                if node.threshold is not None:
-                    col_key = _coerce(node.feature, row.index)
-                    node = node.left if row[col_key] <= node.threshold else node.right
+        def is_numeric(v) -> bool:
+            return isinstance(v, (int, float, np.integer, np.floating))
+
+        def predict_row(row: pd.Series) -> Union[float, int, str]:
+            node = self.root_node
+            while node is not None and not node.check_leaf():
+                attr = node.attribute
+                val = node.value
+                xval = row[attr]
+
+                # Decide split type by the stored split value:
+                # numeric 'value' => threshold split; else equality split
+                if is_numeric(val):
+                    node = node.left if xval <= val else node.right
                 else:
-                    col_key = _coerce(node.feature, row.index)
-                    val = row[col_key]
-                    child = node.children.get(val) if node.children is not None else None
-                    if child is None:
-                        node = TreeNode(is_leaf=True, value=fallback)
-                        break
-                    node = child
-                    if node.is_leaf:
-                        fallback = node.value
-            preds.append(node.value if isinstance(node, TreeNode) and node.is_leaf else fallback)
-        return pd.Series(preds)
+                    node = node.left if xval == val else node.right
 
-    def plot(self) -> None:
-        def print_tree(node: TreeNode, depth=0):
+            # leaf
+            return node.output if node is not None else None
+
+        return pd.Series([predict_row(x) for _, x in X.iterrows()])
+
+    def plot(self, path: str = None) -> None:
+        """
+        Pretty-print tree in text form.
+        """
+        if not self.root_node:
+            print("Tree not trained yet")
+            return
+
+        print("\nTree Structure:")
+        print(self.print_tree())
+
+    def print_tree(self) -> str:
+        def is_numeric(v) -> bool:
+            return isinstance(v, (int, float, np.integer, np.floating))
+
+        def fmt_split(attr, val) -> str:
+            if is_numeric(val):
+                return f'?(attribute {attr} <= {val:.4f})'
+            return f'?(attribute {attr} == {val})'
+
+        def print_node(node: Node, indent: str = '') -> str:
             if node.is_leaf:
-                print("\t" * depth + f"Leaf: {node.value}")
-                return
-            if node.threshold is not None:
-                print("\t" * depth + f"?({node.feature} <= {node.threshold})")
-                print("\t" * (depth + 1) + "Yes:")
-                print_tree(node.left, depth + 2)
-                print("\t" * (depth + 1) + "No:")
-                print_tree(node.right, depth + 2)
-            else:
-                print("\t" * depth + f"?({node.feature})")
-                for v, child in (node.children or {}).items():
-                    print("\t" * (depth + 1) + f"{v}:")
-                    print_tree(child, depth + 2)
+                return f'Class {node.output}\n'
+            s = f'{fmt_split(node.attribute, node.value)}\n'
+            s += f'{indent}Y: ' + print_node(node.left, indent + '    ')
+            s += f'{indent}N: ' + print_node(node.right, indent + '    ')
+            return s
 
-        print_tree(self.tree)
+        return print_node(self.root_node)
