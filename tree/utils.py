@@ -1,212 +1,262 @@
 """
 You can add your own functions here according to your decision tree implementation.
-There is no restriction on following the below template, these fucntions are here to simply help you.
+There is no restriction on following the below template, these functions are here to simply help you.
 """
 
-import pandas as pd
-from typing import Optional, Tuple, Union, List
 import numpy as np
+import pandas as pd
+
+
+# ---------------------------
+# Encoding
+# ---------------------------
+
 def one_hot_encoding(X: pd.DataFrame) -> pd.DataFrame:
     """
-    Function to perform one hot encoding on the input data
+    Perform one-hot encoding on multi-category discrete columns.
+    Leaves binary discrete columns as-is.
     """
-    for col in X.select_dtypes(include=['category', 'object']).columns:
-        dummies = pd.get_dummies(X[col], prefix=col)
-        X = pd.concat([X, dummies], axis=1)
-        X = X.drop(columns=[col])
+    for column in X.columns:
+        if not check_ifreal(X[column]) and X[column].nunique(dropna=False) > 2:
+            dummies = pd.get_dummies(X[column], prefix=column)
+            X = pd.concat([X, dummies], axis=1)
+            X.drop(column, axis=1, inplace=True)
     return X
-    
 
-def check_ifreal(y: pd.Series) -> bool:
-    """
-    Function to check if the given series has real or discrete values
-    """
 
-    if y.dtype in [int, float] or pd.api.types.is_float_dtype(y) or pd.api.types.is_integer_dtype(y):
-        return True
-    else:
+# ---------------------------
+# Real vs Discrete detection
+# ---------------------------
+
+def check_ifreal(y: pd.Series, real_distinct_threshold: int = 6) -> bool:
+    """
+    Heuristic to decide if a series is 'real/continuous' or 'discrete'.
+    - categorical/bool/string -> discrete
+    - float -> real
+    - int -> real if #distinct >= threshold, else discrete
+    """
+    if pd.api.types.is_categorical_dtype(y) or pd.api.types.is_bool_dtype(y) or pd.api.types.is_string_dtype(y):
         return False
+    if pd.api.types.is_float_dtype(y):
+        return True
+    if pd.api.types.is_integer_dtype(y):
+        return int(pd.Series(y).nunique(dropna=False)) >= real_distinct_threshold
+    return False
 
+
+# ---------------------------
+# Impurity / Error metrics
+# ---------------------------
 
 def entropy(Y: pd.Series) -> float:
     """
-    Function to calculate the entropy
+    Entropy = -sum p_i log2 p_i
     """
+    if len(Y) == 0:
+        return 0.0
+    counts = Y.value_counts(normalize=True, dropna=False).to_numpy(dtype=float)
+    # add tiny epsilon for numerical stability
+    return float(-np.sum(counts * np.log2(counts + 1e-12)))
 
-    val = Y.value_counts(normalize=True)
-    ent = 0
-    for p in val:
-        if p > 0:
-            ent += -p * np.log2(p)
-    return ent
 
 def gini_index(Y: pd.Series) -> float:
     """
-    Function to calculate the gini index
+    Gini = 1 - sum p_i^2
     """
+    if len(Y) == 0:
+        return 0.0
+    p = Y.value_counts(normalize=True, dropna=False).to_numpy(dtype=float)
+    return float(1.0 - np.sum(p * p))
 
-    val = Y.value_counts(normalize=True)
-    gini = 1
-    for p in val:
-        gini -= p**2
-    return gini
 
 def mse(Y: pd.Series) -> float:
     """
-    Function to calculate the mean squared error
+    Mean Squared Error around the mean (population version)
     """
+    if len(Y) == 0:
+        return 0.0
+    mu = float(np.mean(Y))
+    return float(np.mean((Y - mu) ** 2))
 
-    return ((Y - Y.mean()) ** 2).mean()
 
-def variance_reduction(Y: pd.Series, parts: List[pd.Series]) -> float:
+# ---------------------------
+# Criterion routing
+# ---------------------------
+
+def check_criteria(Y: pd.Series, criterion: str):
     """
-    Function to calculate the variance reduction
+    Map (Y type, criterion name) -> concrete function ('entropy' | 'gini_index' | 'mse').
+    - If criterion == "entropy":
+        * classification (discrete Y): entropy
+        * regression     (real Y):     mse (i.e., variance reduction)
+    - If criterion == "gini_index": use gini for classification; for real Y it’s uncommon,
+      but we keep gini for compatibility with the template.
     """
-
-    base_variance = Y.var()
-    total_count = len(Y)
-    weighted_variance = 0
-    for part in parts:
-        weighted_variance += (len(part) / total_count) * part.var()
-    var_reduction = base_variance - weighted_variance
-    return var_reduction
-
-def information_gain(Y: pd.Series, attr: pd.Series, criterion: str) -> float:
-    """
-    Function to calculate the information gain using criterion (entropy, gini index or MSE)
-    """
-
-    if criterion == 'entropy':
-        base_entropy = entropy(Y)
-        val = attr.value_counts(normalize=True)
-        cond_entropy = 0
-        for v, p in val.items():
-            cond_entropy += p * entropy(Y[attr == v])
-        info_gain = base_entropy - cond_entropy
-        return info_gain
-
-    elif criterion == 'gini_index':
-        base_gini = gini_index(Y)
-        val = attr.value_counts(normalize=True)
-        cond_gini = 0
-        for v, p in val.items():
-            cond_gini += p * gini_index(Y[attr == v])
-        info_gain = base_gini - cond_gini
-        return info_gain
-
-    elif criterion == 'MSE':
-        base_mse = ((Y - Y.mean()) ** 2).mean()
-        val = attr.value_counts(normalize=True)
-        cond_mse = 0
-        for v, p in val.items():
-            cond_mse += p * ((Y[attr == v] - Y[attr == v].mean()) ** 2).mean()
-        info_gain = base_mse - cond_mse
-        return info_gain
-
+    if criterion == "entropy":
+        this_criteria = "mse" if check_ifreal(Y) else "entropy"
+    elif criterion == "gini_index":
+        this_criteria = "gini_index"
     else:
-        raise ValueError("Invalid criterion. Choose from 'entropy', 'gini_index', or 'MSE'.")
+        # default safe fallback (use entropy for classification, mse for regression)
+        this_criteria = "mse" if check_ifreal(Y) else "entropy"
 
-def information_gain_from_parts(Y: pd.Series, parts: List[pd.Series]) -> float:
-    H_parent = entropy(Y)
-    N = len(Y)
-    if N == 0:
-        return 0.0
-    return H_parent - sum((len(p) / N) * entropy(p) for p in parts if len(p))
+    func_map = {
+        "entropy": entropy,
+        "gini_index": gini_index,
+        "mse": mse,
+    }
+    return this_criteria, func_map[this_criteria]
 
-def gini_decrease_from_parts(Y: pd.Series, parts: List[pd.Series]) -> float:
-    G_parent = gini_index(Y)
-    N = len(Y)
-    if N == 0:
-        return 0.0
-    return G_parent - sum((len(p) / N) * gini_index(p) for p in parts if len(p))
 
-def opt_split_attribute(
-    X: pd.DataFrame,
-    y: pd.Series,
-    criterion: str = "information_gain",
-)-> Optional[Union[str, Tuple[str, float]]]:
+# ---------------------------
+# Threshold search (numeric features)
+# ---------------------------
+
+def opt_threshold(Y: pd.Series, attr: pd.Series, criterion: str):
     """
-    Choose the best split.
-
-    Returns:
-      - str (attribute name) for DISCRETE-X splits (classification or regression)
-      - (str, float) for REAL-X splits (classification or regression)
-      - None if no valid split found.
-
-    For classification (y discrete):
-        criterion: "information_gain" | "gini_index"
-    For regression  (y real):
-        criterion is ignored; we maximize variance reduction.
+    Find optimal threshold for a numeric feature by scanning midpoints of sorted unique values.
+    Returns the threshold (float) or None if not possible.
     """
-    if X is None or X.shape[1] == 0 or len(y) == 0 or y.nunique(dropna=False) <= 1:
+    # ensure numeric attribute
+    if not check_ifreal(attr):
         return None
 
-    y_is_real = check_ifreal(y)
-    real_cols = [c for c in X.columns if check_ifreal(X[c])]
-    cat_cols  = [c for c in X.columns if not check_ifreal(X[c])]
+    this_criteria, crit_func = check_criteria(Y, criterion)
 
-    if not y_is_real:
-        scorer = gini_decrease_from_parts if criterion == "gini_index" else information_gain_from_parts
-    else:
-        scorer = variance_reduction
+    xs = pd.Series(attr, copy=False).astype(float).sort_values().to_numpy()
+    if xs.size <= 1:
+        return None
 
-    best_score = -np.inf
-    best_attr: Optional[str] = None
-    best_pair: Optional[Tuple[str, float]] = None
+    uniq = np.unique(xs)
+    if uniq.size <= 1:
+        return None
 
-    for col in real_cols:
-        x = X[col].to_numpy(dtype=float)
-        order = np.argsort(x)
-        x_sorted = x[order]
-        idx = np.where(np.diff(x_sorted) != 0)[0]
-        if idx.size == 0:
+    # candidate thresholds are midpoints between unique consecutive values
+    mids = (uniq[:-1] + uniq[1:]) / 2.0
+
+    best_thr = None
+    best_gain = -np.inf
+
+    for thr in mids:
+        left_mask = attr <= thr
+        Y_left = Y[left_mask]
+        Y_right = Y[~left_mask]
+        if len(Y_left) == 0 or len(Y_right) == 0:
             continue
-        for i in idx:
-            thr = (x_sorted[i] + x_sorted[i + 1]) / 2.0
-            left_mask = X[col] <= thr
-            yL, yR = y[left_mask], y[~left_mask]
-            if len(yL) == 0 or len(yR) == 0:
-                continue
-            score = scorer(y, [yL, yR])
-            if score > best_score:
-                best_score = score
-                best_pair = (col, float(thr))
-                best_attr = None
 
-    for col in cat_cols:
-        parts = [y[X[col] == v] for v in X[col].dropna().unique()]
-        if len(parts) <= 1:
+        # weighted child impurity
+        w_left = len(Y_left) / len(Y)
+        w_right = 1.0 - w_left
+        child = w_left * crit_func(Y_left) + w_right * crit_func(Y_right)
+        gain = crit_func(Y) - child
+
+        if gain > best_gain:
+            best_gain = gain
+            best_thr = float(thr)
+
+    return best_thr
+
+
+# ---------------------------
+# Information gain wrapper
+# ---------------------------
+
+def information_gain(Y: pd.Series, attribute: pd.Series, criterion: str = None) -> float:
+    """
+    IG = crit(Y) - sum_i (|Y_i| / |Y|) * crit(Y_i)
+    - For numeric attributes: split at best threshold (via opt_threshold)
+    - For discrete attributes: group by unique values
+    """
+    this_criteria, crit_func = check_criteria(Y, criterion)
+
+    # numeric attribute -> threshold split
+    if check_ifreal(attribute):
+        thr = opt_threshold(Y, attribute, criterion)
+        if thr is None:
+            return 0.0
+        Y_left = Y[attribute <= thr]
+        Y_right = Y[attribute > thr]
+        w_left = len(Y_left) / len(Y)
+        w_right = 1.0 - w_left
+        return crit_func(Y) - (w_left * crit_func(Y_left) + w_right * crit_func(Y_right))
+
+    # discrete attribute -> multiway split
+    total = 0.0
+    n = len(Y)
+    if n == 0:
+        return 0.0
+    for v in attribute.dropna().unique():
+        Y_i = Y[attribute == v]
+        if len(Y_i) == 0:
             continue
-        score = scorer(y, parts)
-        if score > best_score:
-            best_score = score
-            best_attr = col
-            best_pair = None
+        total += (len(Y_i) / n) * crit_func(Y_i)
+    return crit_func(Y) - total
 
-    if best_pair is not None:
-        return best_pair
-    if best_attr is not None:
-        return best_attr
-    return None
+
+# ---------------------------
+# Best attribute selection
+# ---------------------------
+
+def opt_split_attribute(X: pd.DataFrame, y: pd.Series, features: pd.Series, criterion: str):
+    """
+    From 'features' choose the attribute with maximum information gain
+    (entropy/Gini for classification, MSE for regression when criterion='information_gain').
+    """
+    best_feature = None
+    best_gain = -np.inf
+
+    for feature in features:
+        try:
+            gain = information_gain(y, X[feature], criterion)
+        except Exception:
+            continue
+        if gain > best_gain:
+            best_gain = gain
+            best_feature = feature
+
+    return best_feature
+
+
+# ---------------------------
+# Data splitting helpers
+# ---------------------------
+
+def split_data_discrete(X: pd.DataFrame, y: pd.Series, attribute, value):
+    """
+    Split for discrete attribute:
+      left:  X[attr] == value
+      right: X[attr] != value
+    Returns (X_left, y_left, X_right, y_right)
+    """
+    mask_left = (X[attribute] == value)
+    X_left = X.loc[mask_left]
+    X_right = X.loc[~mask_left]
+    y_left = y.loc[X_left.index]
+    y_right = y.loc[X_right.index]
+    return X_left, y_left, X_right, y_right
+
+
+def split_data_real(X: pd.DataFrame, y: pd.Series, attribute, value):
+    """
+    Split for numeric attribute:
+      left:  X[attr] <= value
+      right: X[attr] >  value
+    Returns (X_left, y_left, X_right, y_right)
+    """
+    mask_left = (X[attribute] <= value)
+    X_left = X.loc[mask_left]
+    X_right = X.loc[~mask_left]
+    y_left = y.loc[X_left.index]
+    y_right = y.loc[X_right.index]
+    return X_left, y_left, X_right, y_right
+
 
 def split_data(X: pd.DataFrame, y: pd.Series, attribute, value):
     """
-    Funtion to split the data according to an attribute.
-    If needed you can split this function into 2, one for discrete and one for real valued features.
-    You can also change the parameters of this function according to your implementation.
-
-    attribute: attribute/feature to split upon
-    value: value of that attribute to split upon
-
-    return: splitted data(Input and output)
+    Generic split that dispatches to discrete/real version.
+    Always returns (X_left, y_left, X_right, y_right).
     """
-    if (check_ifreal(X[attribute])==False):
-        subset_X = X[X[attribute] == value].drop(columns=[attribute])
-        subset_y = y[X[attribute] == value]
-        return subset_X, subset_y
-    else:  
-        subset_X_left = X[X[attribute] <= value]
-        subset_X_right = X[X[attribute] > value]
-        y_left = y[X[attribute] <= value]
-        y_right = y[X[attribute] > value]
-        return subset_X_left, subset_X_right, y_left, y_right
+    if check_ifreal(X[attribute]):
+        return split_data_real(X, y, attribute, value)
+    else:
+        return split_data_discrete(X, y, attribute, value)
